@@ -184,7 +184,8 @@ int WarpX::do_electrostatic;
 Real WarpX::self_fields_required_precision = 1.e-11_rt;
 Real WarpX::self_fields_absolute_tolerance = 0.0_rt;
 int WarpX::self_fields_max_iters = 200;
-int WarpX::self_fields_verbosity = 2;
+int WarpX::self_fields_verbosity = 0;
+int WarpX::screenout_interval = 100;
 
 bool WarpX::do_subcycling = false;
 bool WarpX::do_multi_J = false;
@@ -257,7 +258,7 @@ WarpX::WarpX ()
     dt.resize(nlevs_max, std::numeric_limits<Real>::max());
 
     // Particle Container
-    mypc = std::make_unique<MultiParticleContainer>(this);
+    mypc = std::make_unique<MultiParticleContainer>(this);  // [Polymorphism] using derived class WarpX to take position of base class amrcore 
     warpx_do_continuous_injection = mypc->doContinuousInjection();
     if (warpx_do_continuous_injection){
         if (moving_window_v >= 0){
@@ -578,6 +579,9 @@ WarpX::ReadParameters ()
 
         queryWithParser(pp_warpx, "cfl", cfl);
         pp_warpx.query("verbose", verbose);
+        pp_warpx.query("screenout", screen);
+        if (!screen) screen = screenout_interval;
+
         queryWithParser(pp_warpx, "regrid_int", regrid_int);
         pp_warpx.query("do_subcycling", do_subcycling);
         pp_warpx.query("do_multi_J", do_multi_J);

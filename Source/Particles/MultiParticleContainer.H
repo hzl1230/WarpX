@@ -95,6 +95,8 @@ public:
 
     void InitMultiPhysicsModules ();
 
+    void ScreenParticleNumber(int);
+
     ///
     /// This evolves all the particles by one PIC time step, including current deposition, the
     /// field solve, and pushing the particles, for all the species in the MultiParticleContainer.
@@ -279,7 +281,13 @@ public:
     int doContinuousInjection() const;
 
     // Inject particles from a surface during the simulation
-    void ContinuousFluxInjection(amrex::Real t, amrex::Real dt) const;
+//    void ContinuousFluxInjection(amrex::Real t, amrex::Real dt) const;
+
+    void ContinuousFluxInjection(const amrex::Real cur_time,
+                                 const amrex::Real dt,
+                                 const amrex::MultiFab& Ex,
+                                 const amrex::MultiFab& Ey,
+                                 const amrex::MultiFab& Ez) const;
 
     std::vector<std::string> GetSpeciesNames() const { return species_names; }
 

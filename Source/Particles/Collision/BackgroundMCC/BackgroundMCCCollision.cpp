@@ -268,6 +268,8 @@ BackgroundMCCCollision::doCollisions (amrex::Real cur_time, amrex::Real dt, Mult
 
         // firstly loop over particles box by box and do all particle conserving
         // scattering
+        
+        // amrex::Print() << "lev = " + std::to_string(lev) + "    " + m_species_names[0] + ".np = "  ;
 #ifdef _OPENMP
 #pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
 #endif
@@ -277,7 +279,6 @@ BackgroundMCCCollision::doCollisions (amrex::Real cur_time, amrex::Real dt, Mult
                 amrex::Gpu::synchronize();
             }
             amrex::Real wt = amrex::second();
-
             doBackgroundCollisionsWithinTile(pti, cur_time);
 
             if (cost && WarpX::load_balance_costs_update_algo == LoadBalanceCostsUpdateAlgo::Timers)
@@ -293,6 +294,7 @@ BackgroundMCCCollision::doCollisions (amrex::Real cur_time, amrex::Real dt, Mult
             doBackgroundIonization(lev, cost, species1, species2, cur_time);
         }
     }
+    // amrex::Print() << "\n";
 }
 
 
@@ -306,7 +308,8 @@ void BackgroundMCCCollision::doBackgroundCollisionsWithinTile
 
     // get particle count
     const long np = pti.numParticles();
-
+    // amrex::Print() << np << "-" + std::to_string(pti.index()) + "   ";
+    
     // get parsers for the background density and temperature
     auto n_a_func = m_background_density_func;
     auto T_a_func = m_background_temperature_func;

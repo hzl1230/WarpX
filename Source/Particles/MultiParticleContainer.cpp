@@ -97,7 +97,7 @@ MultiParticleContainer::MultiParticleContainer (AmrCore* amr_core)
 
     allcontainers.resize(nspecies + nlasers);
     for (int i = 0; i < nspecies; ++i) {
-        if (species_types[i] == PCTypes::Physical) {
+        if (species_types[i] == PCTypes::Physical) { // default
             allcontainers[i] = std::make_unique<PhysicalParticleContainer>(amr_core, i, species_names[i]);
         }
         else if (species_types[i] == PCTypes::RigidInjected) {
@@ -133,6 +133,26 @@ MultiParticleContainer::MultiParticleContainer (AmrCore* amr_core)
     // Setup particle collisions
     collisionhandler = std::make_unique<CollisionHandler>(this);
 
+}
+
+void 
+MultiParticleContainer::ScreenParticleNumber(int step_lb)
+{
+    Long nparticle = 0;
+    if (allcontainers.empty()) { 
+        amrex::Print() << "No particle containers are generated.\n";
+    }
+    else {
+        amrex::Print() << "steps = " << step_lb << ":  ";
+        const bool only_valid = true, only_local = false;
+        nparticle = allcontainers[0]->TotalNumberOfParticles(only_valid, only_local);
+        amrex::Print() << species_names[0]+".np =   " << nparticle ;
+        for (unsigned i = 1; i < allcontainers.size(); i++) {
+            nparticle = allcontainers[i]->TotalNumberOfParticles(only_valid, only_local);
+            amrex::Print() <<", " +  species_names[i]+ ".np =   " << nparticle ;
+        }
+        amrex::Print() << "\n";
+    }
 }
 
 void
@@ -791,12 +811,31 @@ MultiParticleContainer::doContinuousInjection () const
  * calls virtual function ContinuousFluxInjection.
  */
 void
-MultiParticleContainer::ContinuousFluxInjection (amrex::Real t, amrex::Real dt) const
+MultiParticleContainer::ContinuousFluxInjection (amrex::Real t, amrex::Real dt,
+                                                 const amrex::MultiFab& Ex,
+                                                 const amrex::MultiFab& Ey,
+                                                 const amrex::MultiFab& Ez) const
 {
     for (auto& pc : allcontainers){
-        pc->ContinuousFluxInjection(t, dt);
+        pc->ContinuousFluxInjection(t, dt, Ex, Ey, Ez);
     }
 }
+
+/* \brief Continuous injection of a flux of particles
+ * Loop over all WarpXParticleContainer in MultiParticleContainer and
+ * calls virtual function ContinuousFluxInjection.
+ */
+//void
+//MultiParticleContainer::CathodeElectronEmission(const amrex::Real cur_time,
+//                                                const amrex::Real dt,
+//                                                const amrex::MultiFab *Ex,
+//                                                const amrex::MultiFab *Ey,
+//                                                const amrex::MultiFab *Ez) const
+//{
+//    for (auto& pc : allcontainers) {
+//        pc->CathodeElectronEmission(cur_time, dt, *Ex, *Ey, *Ez);
+//    }
+//}
 
 /* \brief Get ID of product species of each species.
  * The users specifies the name of the product species,

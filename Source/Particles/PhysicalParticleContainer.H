@@ -193,6 +193,11 @@ public:
     */
     void AddPlasmaFlux (amrex::Real dt);
 
+    void AddCathodeEmission(const amrex::Real dt,
+                            const amrex::MultiFab &Ex,
+                            const amrex::MultiFab &Ey,
+                            const amrex::MultiFab &Ez);
+
     void MapParticletoBoostedFrame (amrex::ParticleReal& x, amrex::ParticleReal& y, amrex::ParticleReal& z,
                                     amrex::ParticleReal& ux, amrex::ParticleReal& uy, amrex::ParticleReal& uz);
 
@@ -363,7 +368,16 @@ protected:
     void ContinuousInjection (const amrex::RealBox& injection_box) override;
 
     // Continuously inject a flux of particles from a defined surface
-    void ContinuousFluxInjection (const amrex::Real t, const amrex::Real dt) override;
+    void ContinuousFluxInjection (const amrex::Real t, const amrex::Real dt,
+                                  const amrex::MultiFab& Ex,
+                                  const amrex::MultiFab& Ey,
+                                  const amrex::MultiFab& Ez) override;
+
+    // Inject electron from cathode emission
+//    void CathodeElectronEmission(const amrex::Real t, const amrex::Real dt,
+//                                 const amrex::MultiFab& Ex,
+//                                 const amrex::MultiFab& Ey,
+//                                 const amrex::MultiFab& Ez) override;
 
     //This function return true if the PhysicalParticleContainer contains electrons
     //or positrons, false otherwise

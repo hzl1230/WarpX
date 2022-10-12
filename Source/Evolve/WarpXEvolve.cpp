@@ -89,8 +89,12 @@ WarpX::Evolve (int numsteps)
 
         // Start loop on time steps
         if (verbose) {
-            amrex::Print() << "\nSTEP " << step+1 << " starts ...\n";
+            amrex::Print() << "\nSTEP " << step+1 << " starts:\n";
         }
+        if (step == 0 || (step+1) % screen == 0) {
+            mypc->ScreenParticleNumber(step+1);
+        }
+
         ExecutePythonCallback("beforestep");
 
         amrex::LayoutData<amrex::Real>* cost = WarpX::getCosts(0);
@@ -268,7 +272,10 @@ WarpX::Evolve (int numsteps)
         // We might need to move j because we are going to make a plotfile.
         int num_moved = MoveWindow(step+1, move_j);
 
-        mypc->ContinuousFluxInjection(cur_time, dt[0]);
+        mypc->ContinuousFluxInjection(cur_time, dt[0],
+                                      *Efield_aux[0][0],
+                                      *Efield_aux[0][1],
+                                      *Efield_aux[0][2]);
 
         mypc->ApplyBoundaryConditions();
 
