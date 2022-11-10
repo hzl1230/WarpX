@@ -1344,8 +1344,8 @@ std::string F_name, std::string F_component)
         // Start ParallelFor
         amrex::ParallelFor (tb,
             [=] AMREX_GPU_DEVICE (int i, int j, int k) {
-                // i,j,k denote x,y,z indicies in 3D xyz.
-                // i,j,k denote r,z,mode indicies in 2D rz.
+                // i,j,k denote x,y,z indices in 3D xyz.
+                // i,j,k denote r,z,mode indices in 2D rz.
 
                 // ii is used for 2D RZ mode
                 int ii = i;
@@ -1375,7 +1375,7 @@ std::string F_name, std::string F_component)
                 amrex::Real const xx0 = offset[0] + ix0*d[0];
                 amrex::Real const xx1 = offset[1] + ix1*d[1];
 
-                // Get portion ratio for linear interpolatioin
+                // Get portion ratio for linear interpolation
                 amrex::Real const ddx0 = (x0-xx0)/d[0];
                 amrex::Real const ddx1 = (x1-xx1)/d[1];
 
