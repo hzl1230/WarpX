@@ -309,6 +309,17 @@ PlasmaInjector::PlasmaInjector (int ispecies, const std::string& name)
         std::string flux_normal_axis_help = "'z'.";
 #    endif
 #endif
+        pp_species_name.query("cathode_emission", cathode_emit);
+        if (cathode_emit) {
+            getWithParser(pp_species_name, "D_cathode", Material_Constant);
+            getWithParser(pp_species_name, "Phi_cathode", Potential_Work);
+            getWithParser(pp_species_name, "T_cathode", Temp_Work);
+            getWithParser(pp_species_name, "V_cathode", Volt_gap);
+            h_emit_flux = std::make_unique<Cathode_Def>
+                    (Material_Constant, Potential_Work,Temp_Work, Volt_gap);
+            cathode_initialized = true;
+        }
+
         WARPX_ALWAYS_ASSERT_WITH_MESSAGE(flux_normal_axis >= 0,
             "Error: Invalid value for flux_normal_axis. It must be " + flux_normal_axis_help);
         pp_species_name.get("flux_direction", flux_direction);
@@ -490,6 +501,11 @@ PlasmaInjector::PlasmaInjector (int ispecies, const std::string& name)
 #endif
     }
 
+    if (h_emit_flux) {
+
+        d_emit_flux = h_emit_flux.get();
+    }
+
     amrex::Gpu::synchronize();
 }
 
@@ -506,6 +522,7 @@ PlasmaInjector::~PlasmaInjector ()
         amrex::The_Arena()->free(d_inj_mom);
     }
 #endif
+//    delete(d_emit_flux);
 }
 
 // Depending on injection type at runtime, initialize inj_rho
@@ -698,4 +715,10 @@ InjectorMomentum*
 PlasmaInjector::getInjectorMomentum ()
 {
     return d_inj_mom;
+}
+
+Cathode_Def*
+PlasmaInjector::getCathodeDefined ()
+{
+    return d_emit_flux;
 }

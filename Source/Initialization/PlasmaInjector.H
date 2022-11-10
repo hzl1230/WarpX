@@ -31,6 +31,35 @@
 #include <memory>
 #include <string>
 
+struct Cathode_Def
+{
+    amrex::Real D_C;
+    amrex::Real Phi;
+    amrex::Real Temp;
+    amrex::Real Vgap;
+    amrex::Real e_kT, DT2;
+    amrex::Real coef_1, coef_2;
+
+    explicit Cathode_Def() {};
+    Cathode_Def(amrex::Real D, amrex::Real p, amrex::Real T, amrex::Real V) noexcept
+            : D_C(D), Phi(p), Temp(T), Vgap(V)
+    {
+        e_kT = PhysConst::q_e / PhysConst::kb / Temp;
+        DT2 = D_C*Temp*Temp;
+        coef_1 = DT2 * std::exp(-e_kT * Phi);
+        coef_2 = e_kT * std::sqrt(0.25 * PhysConst::q_e/PhysConst::ep0/MathConst::pi);
+    }
+
+    // Get flux by Richardson-Dushman with Schottky effect
+    constexpr amrex::Real get_Flux_RDS(amrex::Real Ec) {
+        return coef_1 * std::exp(coef_2 * std::sqrt(Ec)) / PhysConst::q_e;
+    }
+
+    constexpr amrex::Real get_Flux_spc() {
+        return DT2*std::exp(-e_kT * Phi ) / PhysConst::q_e;
+    }
+};
+
 ///
 /// The PlasmaInjector class parses and stores information about the plasma
 /// type used in the particle container. This information is used to create the
@@ -122,6 +151,13 @@ public:
     std::string str_momentum_function_uy;
     std::string str_momentum_function_uz;
 
+    bool cathode_emit = false; // emit from a cathode
+    bool cathode_initialized = false;
+    amrex::Real Material_Constant;
+    amrex::Real Potential_Work;
+    amrex::Real Temp_Work;
+    amrex::Real Volt_gap;
+
     amrex::Real xmin, xmax;
     amrex::Real ymin, ymax;
     amrex::Real zmin, zmax;
@@ -131,6 +167,8 @@ public:
     InjectorPosition* getInjectorPosition ();
     InjectorDensity*  getInjectorDensity ();
     InjectorMomentum* getInjectorMomentum ();
+
+    Cathode_Def* getCathodeDefined ();
 
 protected:
 
@@ -163,6 +201,11 @@ protected:
 
     void parseDensity (amrex::ParmParse& pp);
     void parseMomentum (amrex::ParmParse& pp);
+
+
+    std::unique_ptr<Cathode_Def> h_emit_flux;
+    Cathode_Def* d_emit_flux = nullptr;
+
 };
 
 #endif

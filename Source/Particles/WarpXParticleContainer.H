@@ -254,7 +254,16 @@ public:
     virtual void UpdateContinuousInjectionPosition(amrex::Real /*dt*/) {}
 
     // Inject a continuous flux of particles from a defined plane
-    virtual void ContinuousFluxInjection(amrex::Real /*t*/, amrex::Real /*dt*/) {}
+    virtual void ContinuousFluxInjection(amrex::Real /*t*/, amrex::Real /*dt*/,
+                                         const amrex::MultiFab& /*Ex*/,
+                                         const amrex::MultiFab& /*Ey*/,
+                                         const amrex::MultiFab& /*Ez*/) {}
+//    Inject electron from a cathode
+//    virtual void CathodeElectronEmission(const amrex::Real /*curr_time*/,
+//                                         const amrex::Real /*dt*/,
+//                                         const amrex::MultiFab& /*Ex*/,
+//                                         const amrex::MultiFab& /*Ey*/,
+//                                         const amrex::MultiFab& /*Ez*/) {}
 
     ///
     /// This returns the total charge for all the particles in this ParticleContainer.

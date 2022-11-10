@@ -1827,6 +1827,515 @@ PhysicalParticleContainer::AddPlasmaFlux (amrex::Real dt)
 }
 
 void
+PhysicalParticleContainer::AddCathodeEmission(const amrex::Real dt,
+                                              const amrex::MultiFab &Ex,
+                                              const amrex::MultiFab &Ey,
+                                              const amrex::MultiFab &Ez)
+
+{
+    WARPX_PROFILE("PhysicalParticleContainer::CathodeEmission()");
+
+    const Geometry &geom = Geom(0);
+    const amrex::RealBox &part_realbox = geom.ProbDomain();
+
+    // This parameter is only used to calculate weight, not the real inject part_number
+    const amrex::Real num_ppc_real = plasma_injector->num_particles_per_cell_real;
+
+#ifdef WARPX_DIM_RZ
+    Real rmax = std::min(plasma_injector->xmax, geom.ProbDomain().hi(0));
+#endif
+
+    const auto dx = geom.CellSizeArray();
+    const auto problo = geom.ProbLoArray();
+    const amrex::Real dxinv[AMREX_SPACEDIM] = { AMREX_D_DECL(1./dx[0], 1./dx[1], 1./dx[2]) };
+
+    Real scale = 0._rt;  // fac: S_inj/N_ppc
+    Real weight_fac = 0._rt;
+
+#if defined(WARPX_DIM_3D)
+    weight_fac = dx[0]*dx[1]*dx[2]/num_ppc_real;
+    scale = weight_fac/dx[plasma_injector->flux_normal_axis];
+#elif defined(WARPX_DIM_RZ) || defined(WARPX_DIM_XZ)
+    weight_fac = dx[0]*dx[1]/num_ppc_real;
+    // For r direction in 2D3V, the injecting plane is a cylinder.
+    // The factor 2*pi*r is deal with later.
+    if (plasma_injector->flux_normal_axis == 0) scale = weight_fac / dx[1];
+    // When cathode emission is at z direction, the emitting surface is an annulus
+    // The factor of 2*pi*r is added later.
+    if (plasma_injector->flux_normal_axis == 2) scale = weight_fac / dx[0];
+    // When emission is in the theta direction (flux_normal_axis == 1),
+    // the emitting surface is a rectangle, within the plane of the simulation
+#elif defined(WARPX_DIM_1D_Z)
+    weight_fac = dx[0]/num_ppc_real;
+    if (plasma_injector->flux_normal_axis == 2) scale_fac /= dx[0];
+#endif
+
+    amrex::LayoutData<amrex::Real>* cost = WarpX::getCosts(0);
+
+
+    PhysicalParticleContainer tmp_pc(&WarpX::GetInstance());
+    for (int ic = 0; ic < NumRuntimeRealComps(); ++ic) { tmp_pc.AddRealComp(false); }
+    for (int ic = 0; ic < NumRuntimeIntComps(); ++ic) { tmp_pc.AddIntComp(false); }
+    tmp_pc.defineAllParticleTiles();
+
+    InjectorPosition* inj_pos = plasma_injector->getInjectorPosition();
+    InjectorDensity*  inj_rho = plasma_injector->getInjectorDensity();
+    InjectorMomentum* inj_mom = plasma_injector->getInjectorMomentum();
+    Cathode_Def*      emit_def = plasma_injector->getCathodeDefined();
+
+    constexpr int level_zero = 0;
+    const amrex::Real t = WarpX::GetInstance().gett_new(level_zero);
+
+    // For Emission, density only needed to get weight
+    const amrex::Real rho = inj_rho->getDensity(0, 0, 0);
+    const amrex::Real dt_weight = dt / scale / rho;
+    weight_fac *= rho;
+
+#ifdef WARPX_DIM_RZ
+    const int nmodes = WarpX::n_rz_azimuthal_modes;
+    bool radially_weighted = plasma_injector->radially_weighted;
+#endif
+
+    MFItInfo info;
+    if (do_tiling && Gpu::notInLaunchRegion()) {
+        info.EnableTiling(tile_size);
+    }
+#ifdef AMREX_USE_OMP
+    info.SetDynamic(true);
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+    for (MFIter mfi = MakeMFIter(0, info); mfi.isValid(); ++mfi) {
+        if (cost && WarpX::load_balance_costs_update_algo == LoadBalanceCostsUpdateAlgo::Timers) {
+            amrex::Gpu::synchronize();
+        }
+        Real wt = amrex::second();
+
+        const Box& tile_box = mfi.tilebox();
+        const RealBox tile_realbox = WarpX::getRealBox(tile_box, 0);
+        RealBox overlap_realbox;
+        Box overlap_box;
+        IntVect shifted;   // (x, y, z) coordinate set of a point
+        bool no_overlap = false;
+        // first to find whether overlap with part_box
+        for (int dir=0; dir<AMREX_SPACEDIM; dir++) {
+#if (defined(WARPX_DIM_3D))
+            if (dir == plasma_injector->flux_normal_axis) {
+#elif defined(WARPX_DIM_XZ) || defined(WARPX_DIM_RZ)
+            if (2 * dir == plasma_injector->flux_normal_axis) {
+                // The above formula captures the following cases:
+                // - flux_normal_axis=0 (emission along x/r) and dir=0
+                // - flux_normal_axis=2 (emission along z) and dir=1
+#elif defined(WARPX_DIM_1D_Z)
+                if ( (dir==0) && (plasma_injector->flux_normal_axis==2) ) {
+#endif
+                if (plasma_injector->flux_direction > 0) {
+                    if (plasma_injector->surface_flux_pos < tile_realbox.lo(dir) ||
+                        plasma_injector->surface_flux_pos >= tile_realbox.hi(dir)) {
+                        no_overlap = true;
+                        break;
+                    }
+                } else {
+                    if (plasma_injector->surface_flux_pos <= tile_realbox.lo(dir) ||
+                        plasma_injector->surface_flux_pos > tile_realbox.hi(dir)) {
+                        no_overlap = true;
+                        break;
+                    }
+                }
+                // In inject direction, the box is reduced to line, with 1 point but no cell.
+                overlap_realbox.setLo(dir, plasma_injector->surface_flux_pos);
+                overlap_realbox.setHi(dir, plasma_injector->surface_flux_pos);
+                overlap_box.setSmall(dir, 0);
+                overlap_box.setBig(dir, 0);
+                shifted[dir] =
+                        static_cast<int>(std::round((overlap_realbox.lo(dir) - problo[dir]) / dx[dir]));
+            } else {
+                if (tile_realbox.lo(dir) <= part_realbox.hi(dir)) {
+                    Real ncells_adjust = std::floor((tile_realbox.lo(dir) - part_realbox.lo(dir)) / dx[dir]);
+                    overlap_realbox.setLo(dir, part_realbox.lo(dir) + std::max(ncells_adjust, 0._rt) * dx[dir]);
+                } else {
+                    no_overlap = true;
+                    break;
+                }
+                if (tile_realbox.hi(dir) >= part_realbox.lo(dir)) {
+                    Real ncells_adjust = std::floor((part_realbox.hi(dir) - tile_realbox.hi(dir)) / dx[dir]);
+                    overlap_realbox.setHi(dir, part_realbox.hi(dir) - std::max(ncells_adjust, 0._rt) * dx[dir]);
+                } else {
+                    no_overlap = true;
+                    break;
+                }
+                // Count the number of cells in this direction in overlap_realbox
+                // The number follows the index habit in program
+                overlap_box.setSmall(dir, 0);
+                overlap_box.setBig(dir,
+                                   int(std::round((overlap_realbox.hi(dir) - overlap_realbox.lo(dir))
+                                                  / dx[dir])) - 1);
+            }
+        }
+        if (no_overlap == 1) { continue; }
+
+        const int grid_id = mfi.index();
+        const int tile_id = mfi.LocalTileIndex();
+
+        const GpuArray<Real, AMREX_SPACEDIM> overlap_corner
+                {AMREX_D_DECL(overlap_realbox.lo(0),
+                              overlap_realbox.lo(1),
+                              overlap_realbox.lo(2))};
+
+        const GpuArray<int, AMREX_SPACEDIM> overlap_offset
+                {AMREX_D_DECL(static_cast<int>( (overlap_corner[0]-problo[0])*dxinv[0] ),
+                              static_cast<int>( (overlap_corner[1]-problo[1])*dxinv[1] ),
+                              static_cast<int>( (overlap_corner[2]-problo[2])*dxinv[2] ))};
+
+        // count the number of particles that each cell in overlap_box could add
+        Gpu::DeviceVector<int> counts(overlap_box.numPts(), 0);
+        Gpu::DeviceVector<int> offset(overlap_box.numPts());
+        auto pcounts = counts.data();
+
+        amrex::Array4<const amrex::Real> const& ex_arr = Ex[mfi].array();
+        amrex::Array4<const amrex::Real> const& ey_arr = Ey[mfi].array();
+#if defined(WARPX_DIM_RZ) || defined(WARPX_DIM_3D)
+        amrex::Array4<const amrex::Real> const& ez_arr = Ez[mfi].array();
+#endif
+        // Iterate through the box(overlap_box)
+        amrex::ParallelForRNG(overlap_box,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k, amrex::RandomEngine const& engine) noexcept
+        {
+            IntVect iv(AMREX_D_DECL(i, j, k));
+            auto lo = getCellCoords(overlap_corner, dx, {0._rt, 0._rt, 0._rt}, iv);
+            auto hi = getCellCoords(overlap_corner, dx, {1._rt, 1._rt, 1._rt}, iv);
+
+            int num_ppc_emit_int = 0;
+
+            amrex::Real Ec = 0._rt ;
+            amrex::Real emit_flux, emit_flux_old;
+
+            if (inj_pos->overlapsWith(lo, hi)) {
+                auto index = overlap_box.index(iv);
+
+#if defined(WARPX_DIM_3D)
+                if (plasma_injector->flux_normal_axis == 0)   {
+                    Ec = ex_arr(i+overlap_offset[0], j+overlap_offset[1], k+overlap_offset[2], 0);
+                }
+                if (plasma_injector->flux_normal_axis == 1)   {
+                    Ec = ey_arr(i+overlap_offset[0], j+overlap_offset[1], k+overlap_offset[2], 0);
+                }
+                if (plasma_injector->flux_normal_axis == 2)   {
+                    Ec = ez_arr(i+overlap_offset[0], j+overlap_offset[1], k+overlap_offset[2], 0);
+                }
+
+#elif defined(WARPX_DIM_RZ) || defined(WARPX_DIM_XZ)
+                // emit to x or r direction
+                if (plasma_injector->flux_normal_axis == 0)   {
+                    Ec = ex_arr(i+overlap_offset[0], j+overlap_offset[1], 0, 0);
+                }
+                // emit to z direction(both the second defined length parameters)
+                if (plasma_injector->flux_normal_axis == 2)   {
+                    Ec = ey_arr(i+overlap_offset[0], j+overlap_offset[1], 0, 0);
+                }
+#elif defined(WARPX_DIM_1D_Z)
+                if (plasma_injector->flux_normal_axis == 2)   {
+                    Ec = ex_arr(i+overlap_offset[0], 0, 0, 0);
+                }
+#endif
+
+#ifdef WARPX_DIM_RZ
+                // emit to t direction
+                if (plasma_injector->flux_normal_axis == 1)   {
+                    Ec = ez_arr(i+overlap_offset[0], j+overlap_offset[1], 0, 0);
+                }
+#endif
+
+                emit_flux = emit_def->get_Flux_RDS(std::abs(Ec));
+                amrex::Print() << "E: " << Ec << "lo/hi: " << lo.z << " " << hi.z << "\n";
+                num_ppc_emit_int = static_cast<int>(emit_flux * dt_weight  + amrex::Random(engine));
+                pcounts[index] = num_ppc_emit_int;
+            }
+#if defined(WARPX_DIM_XZ) || defined(WARPX_DIM_RZ)
+            amrex::ignore_unused(k);
+#elif defined(WARPX_DIMS_1D_Z)
+            amrex::ignore_unused(j,k);
+#endif
+        });
+        int max_new_particles = Scan::ExclusiveSum(counts.size(), counts.data(), offset.data());
+
+        // Update NextID to include particles created in this function
+        Long pid;
+#ifdef AMREX_USE_OMP
+#pragma omp critical (add_plasma_nextid)
+#endif
+        {
+            pid = ParticleType::NextID();
+            ParticleType::NextID(pid+max_new_particles);
+        }
+        WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
+                static_cast<Long>(pid + max_new_particles) < LastParticleID,
+                "overflow on particle id numbers");
+
+        const int cpuid = ParallelDescriptor::MyProc();
+
+        auto& particle_tile = tmp_pc.DefineAndReturnParticleTile(0, grid_id, tile_id);
+
+        auto old_size = particle_tile.GetArrayOfStructs().size();
+        auto new_size = old_size + max_new_particles;
+        particle_tile.resize(new_size);
+
+        ParticleType* pp = particle_tile.GetArrayOfStructs()().data() + old_size;
+        auto& soa = particle_tile.GetStructOfArrays();
+        GpuArray<ParticleReal*,PIdx::nattribs> pa;
+        for (int ia = 0; ia < PIdx::nattribs; ++ia) {
+            pa[ia] = soa.GetRealData(ia).data() + old_size;
+        }
+
+        // user-defined integer and real attributes
+        const int n_user_int_attribs = m_user_int_attribs.size();
+        const int n_user_real_attribs = m_user_real_attribs.size();
+        amrex::Gpu::DeviceVector<int*> pa_user_int(n_user_int_attribs);
+        amrex::Gpu::DeviceVector<ParticleReal*> pa_user_real(n_user_real_attribs);
+        amrex::Gpu::DeviceVector< amrex::ParserExecutor<7> > user_int_attrib_parserexec(n_user_int_attribs);
+        amrex::Gpu::DeviceVector< amrex::ParserExecutor<7> > user_real_attrib_parserexec(n_user_real_attribs);
+        for (int ia = 0; ia < n_user_int_attribs; ++ia) {
+            pa_user_int[ia] = soa.GetIntData(particle_icomps[m_user_int_attribs[ia]]).data() + old_size;
+            user_int_attrib_parserexec[ia] = m_user_int_attrib_parser[ia]->compile<7>();
+        }
+        for (int ia = 0; ia < n_user_real_attribs; ++ia) {
+            pa_user_real[ia] = soa.GetRealData(particle_comps[m_user_real_attribs[ia]]).data() + old_size;
+            user_real_attrib_parserexec[ia] = m_user_real_attrib_parser[ia]->compile<7>();
+        }
+        int** pa_user_int_data = pa_user_int.dataPtr();
+        ParticleReal** pa_user_real_data = pa_user_real.dataPtr();
+        amrex::ParserExecutor<7> const* user_int_parserexec_data = user_int_attrib_parserexec.dataPtr();
+        amrex::ParserExecutor<7> const* user_real_parserexec_data = user_real_attrib_parserexec.dataPtr();
+
+        int* p_ion_level = nullptr;
+        if (do_field_ionization) {
+            p_ion_level = soa.GetIntData(particle_icomps["ionizationLevel"]).data() + old_size;
+        }
+
+        // Just copy from AddPlasmaFlux
+#ifdef WARPX_QED
+        //Pointer to the optical depth component
+        amrex::ParticleReal* p_optical_depth_QSR = nullptr;
+        amrex::ParticleReal* p_optical_depth_BW  = nullptr;
+
+        // If a QED effect is enabled, the corresponding optical depth
+        // has to be initialized
+        bool loc_has_quantum_sync = has_quantum_sync();
+        bool loc_has_breit_wheeler = has_breit_wheeler();
+        if (loc_has_quantum_sync)
+            p_optical_depth_QSR = soa.GetRealData(
+                    particle_comps["opticalDepthQSR"]).data() + old_size;
+        if(loc_has_breit_wheeler)
+            p_optical_depth_BW = soa.GetRealData(
+                    particle_comps["opticalDepthBW"]).data() + old_size;
+
+        //If needed, get the appropriate functors from the engines
+        QuantumSynchrotronGetOpticalDepth quantum_sync_get_opt;
+        BreitWheelerGetOpticalDepth breit_wheeler_get_opt;
+        if(loc_has_quantum_sync){
+            quantum_sync_get_opt =
+                    m_shr_p_qs_engine->build_optical_depth_functor();
+        }
+        if(loc_has_breit_wheeler){
+            breit_wheeler_get_opt =
+                    m_shr_p_bw_engine->build_optical_depth_functor();
+        }
+#endif
+
+        bool loc_do_field_ionization = do_field_ionization;
+        int loc_ionization_initial_level = ionization_initial_level;
+#ifdef WARPX_DIM_RZ
+        int const loc_flux_normal_axis = plasma_injector->flux_normal_axis;
+#endif
+
+        // Loop over all new particles and inject them (creates too many
+        // particles, in particular does not consider xmin, xmax etc.).
+        // The invalid ones are given negative ID and are deleted during the
+        // next redistribute.
+        const auto poffset = offset.data();
+        amrex::ParallelForRNG(overlap_box,
+        [=] AMREX_GPU_DEVICE (int i, int j, int k, amrex::RandomEngine const& engine) noexcept {
+            IntVect iv = IntVect(AMREX_D_DECL(i, j, k));
+            const auto index = overlap_box.index(iv);
+            for (int ipart = 0; ipart < pcounts[index]; ++ipart) {
+                long ip = poffset[index] + ipart;
+                ParticleType& p = pp[ip];
+                p.id() = pid+ipart;
+                p.cpu() = cpuid;
+
+                const XDim3 r =
+                    inj_pos->getPositionUnitBox(ipart, 1, engine);
+                // Get cell's coords
+                auto pos = getCellCoords(overlap_corner, dx, r, iv);
+                auto ppos = PDim3(pos);
+
+                // Save the x and y values to use in the insideBounds checks.
+                // This is needed with WARPX_DIM_RZ since x and y are modified.
+                Real xb(ppos.x), yb(ppos.y);
+
+                // Lab-frame simulation
+                // If the particle is not within the species's
+                // xmin, xmax, ymin, ymax, zmin, zmax, go to
+                // the next generated particle.
+
+                // First cut the particles generate outside the inject boundary
+                if (!inj_pos->insideBounds(xb, yb, ppos.z)) {
+                    p.id() = -1;
+                    continue;
+                }
+
+                // inj_mom would typically be InjectorMomentumGaussianFlux
+                XDim3 u;
+                u = inj_mom->getMomentum(pos.x, pos.y, pos.z, engine);
+                auto pu = PDim3(u);
+
+                pu.x *= PhysConst::c;
+                pu.y *= PhysConst::c;
+                pu.z *= PhysConst::c;
+
+                const amrex::Real t_fract = amrex::Random(engine) * dt;
+                UpdatePosition(ppos.x, ppos.y, ppos.z, pu.x, pu.y, pu.z, t_fract);
+#if defined(WARPX_DIM_3D)
+                if (!tile_realbox.contains(XDim3{ppos.x, ppos.y, ppos.z})) {
+                    p.id() = -1;
+                    continue;
+                }
+#elif defined(WARPX_DIM_XZ) || defined(WARPX_DIM_RZ)
+                amrex::ignore_unused(k);
+                if (!tile_realbox.contains(XDim3{ppos.x, ppos.z, 0.0_prt})) {
+                    p.id() = -1;
+                    continue;
+                }
+#else
+                amrex::ignore_unused(j,k);
+                if (!tile_realbox.contains(XDim3{ppos.z, 0.0_prt, 0.0_prt})); {
+                    p.id() = -1;
+                    continue;
+                }
+#endif
+
+#ifdef WARPX_DIM_RZ
+                // Replace the x and y, setting an angle theta.
+                // These x and y are used to get the momentum and density
+                Real theta;
+                if (nmodes == 1) {
+                    // With only 1 mode, the angle doesn't matter so
+                    // choose it randomly.
+                    theta = 2._prt*MathConst::pi*amrex::Random(engine);
+                } else {
+                    theta = 2._prt*MathConst::pi*r.y;
+                }
+                Real const cos_theta = std::cos(theta);
+                Real const sin_theta = std::sin(theta);
+                // Rotate the position
+                ppos.x = xb*cos_theta;
+                ppos.y = xb*sin_theta;
+                if (loc_flux_normal_axis != 2) {
+                    // Rotate the momentum
+                    // This because, when the flux direction is e.g. "r"
+                    // the `inj_mom` objects generates a v*Gaussian distribution
+                    // along the Cartesian "x" directionm by default. This
+                    // needs to be rotated along "r".
+                    Real ur = pu.x;
+                    Real ut = pu.y;
+                    pu.x = cos_theta*ur - sin_theta*ut;
+                    pu.y = sin_theta*ur + cos_theta*ut;
+                }
+#endif
+
+                // copy from AddPlasmaFlux
+                if (loc_do_field_ionization) {
+                    p_ion_level[ip] = loc_ionization_initial_level;
+                }
+
+#ifdef WARPX_QED
+                if(loc_has_quantum_sync){
+                    p_optical_depth_QSR[ip] = quantum_sync_get_opt(engine);
+                }
+
+                if(loc_has_breit_wheeler){
+                    p_optical_depth_BW[ip] = breit_wheeler_get_opt(engine);
+                }
+#endif
+                // Initialize user-defined integers with user-defined parser
+                for (int ia = 0; ia < n_user_int_attribs; ++ia) {
+                    pa_user_int_data[ia][ip] = static_cast<int>(user_int_parserexec_data[ia](pos.x, pos.y, pos.z, u.x, u.y, u.z, t));
+                }
+                // Initialize user-defined real attributes with user-defined parser
+                for (int ia = 0; ia < n_user_real_attribs; ++ia) {
+                    pa_user_real_data[ia][ip] = user_real_parserexec_data[ia](pos.x, pos.y, pos.z, u.x, u.y, u.z, t);
+                }
+
+                amrex::Real weight = weight_fac;
+
+#if defined(WARPX_DIM_RZ)
+                if (loc_flux_normal_axis != 1) {
+                    if (radially_weighted) {
+                        weight *= 2._rt * MathConst::pi * xb;
+                    }
+                    else {
+                        ppos.x = std::sqrt(xb * rmax);
+                        weight *= dx[0];
+                    }
+                }
+#endif
+                pa[PIdx::w ][ip] = weight;
+                pa[PIdx::ux][ip] = pu.x;
+                pa[PIdx::uy][ip] = pu.y;
+                pa[PIdx::uz][ip] = pu.z;
+
+#if defined(WARPX_DIM_3D)
+                p.pos(0) = ppos.x;
+                p.pos(1) = ppos.y;
+                p.pos(2) = ppos.z;
+#elif defined(WARPX_DIM_XZ) || defined(WARPX_DIM_RZ)
+#ifdef WARPX_DIM_RZ
+                pa[PIdx::theta][ip] = theta;
+#endif
+                p.pos(0) = xb;
+                p.pos(1) = ppos.z;
+#else
+                p.pos(0) = ppos.z;
+#endif
+            }
+        });
+
+        amrex::Gpu::synchronize();
+
+        if (cost && WarpX::load_balance_costs_update_algo == LoadBalanceCostsUpdateAlgo::Timers)
+        {
+            wt = amrex::second() - wt;
+            amrex::HostDevice::Atomic::Add( &(*cost)[mfi.index()], wt);
+        }
+    }
+
+    // Redistribute the new particles that were added to the temporary container.
+    // (This eliminates invalid particles, and makes sure that particles
+    // are in the right tile.)
+    tmp_pc.Redistribute();
+
+    // Add the particles to the current container, tile by tile
+    for (int lev=0; lev<numLevels(); lev++) {
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (amrex::Gpu::notInLaunchRegion())
+#endif
+        for (MFIter mfi = MakeMFIter(lev, info); mfi.isValid(); ++mfi)
+        {
+            // Extract tiles
+            const int grid_id = mfi.index();
+            const int tile_id = mfi.LocalTileIndex();
+            auto& src_tile = tmp_pc.DefineAndReturnParticleTile(lev, grid_id, tile_id);
+            auto& dst_tile = DefineAndReturnParticleTile(lev, grid_id, tile_id);
+
+            // Resize container and copy particles
+            auto old_size = dst_tile.numParticles();
+            auto n_new = src_tile.numParticles();
+            dst_tile.resize( old_size+n_new );
+            amrex::copyParticles(dst_tile, src_tile, 0, old_size, n_new);
+        }
+    }
+}
+
+void
 PhysicalParticleContainer::Evolve (int lev,
                                    const MultiFab& Ex, const MultiFab& Ey, const MultiFab& Ez,
                                    const MultiFab& Bx, const MultiFab& By, const MultiFab& Bz,
@@ -2017,6 +2526,7 @@ PhysicalParticleContainer::Evolve (int lev,
                 WARPX_PROFILE_VAR_STOP(blp_fg);
 
                 // Current Deposition
+                // In electrostatic is default to true
                 if (skip_deposition == false)
                 {
                     // Deposit at t_{n+1/2}
@@ -2693,9 +3203,22 @@ PhysicalParticleContainer::ContinuousInjection (const RealBox& injection_box)
 /* \brief Inject a flux of particles during the simulation
  */
 void
-PhysicalParticleContainer::ContinuousFluxInjection (amrex::Real t, amrex::Real dt)
+PhysicalParticleContainer::ContinuousFluxInjection (amrex::Real t, amrex::Real dt,
+                                                    const amrex::MultiFab& Ex,
+                                                    const amrex::MultiFab& Ey,
+                                                    const amrex::MultiFab& Ez)
 {
-    if (plasma_injector->surface_flux){
+    if (!plasma_injector->surface_flux) return;
+
+    if (plasma_injector->cathode_emit) {
+        if ( ((plasma_injector->flux_tmin<0) || (t>=plasma_injector->flux_tmin)) &&
+             ((plasma_injector->flux_tmax<0) || (t< plasma_injector->flux_tmax)) ) {
+
+            AddCathodeEmission(dt, Ex, Ey, Ez);
+
+        }
+    }
+    else if (plasma_injector->surface_flux) {
         // Check the optional parameters for start and stop of injection
         if ( ((plasma_injector->flux_tmin<0) || (t>=plasma_injector->flux_tmin)) &&
              ((plasma_injector->flux_tmax<0) || (t< plasma_injector->flux_tmax)) ){
@@ -2705,6 +3228,7 @@ PhysicalParticleContainer::ContinuousFluxInjection (amrex::Real t, amrex::Real d
         }
     }
 }
+
 
 /* \brief Perform the field gather and particle push operations in one fused kernel
  *

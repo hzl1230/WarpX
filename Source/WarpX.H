@@ -742,6 +742,7 @@ public:
     static amrex::Real self_fields_absolute_tolerance;
     static int self_fields_max_iters;
     static int self_fields_verbosity;
+    static int screenout_interval;
 
     static int do_moving_window; // boolean
     static int start_moving_window_step; // the first step to move window
@@ -1318,6 +1319,8 @@ private:
 
     // Other runtime parameters
     int verbose = 1;
+
+    int screen = 100;
 
     bool use_hybrid_QED = 0;
 
