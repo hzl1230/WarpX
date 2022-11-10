@@ -1,5 +1,5 @@
-/* Copyright 2019 Andrew Myers, Luca Fedeli, Maxence Thevenet
- * Weiqun Zhang
+/* Copyright 2019-2022 Andrew Myers, Luca Fedeli, Maxence Thevenet,
+ *                     Weiqun Zhang, Axel Huebl
  *
  * This file is part of WarpX.
  *
@@ -8,28 +8,17 @@
 #ifndef WARPX_CONST_H_
 #define WARPX_CONST_H_
 
-#include <AMReX_REAL.H>
+#include <ablastr/constant.H>
 
-#include <cmath>
 
-#include <map>
-#include <string>
-
-// Math constants
 namespace MathConst
 {
-    static constexpr amrex::Real pi = static_cast<amrex::Real>(3.14159265358979323846);
+    using namespace ablastr::constant::math;
 }
 
-// Physical constants. Values are the 2018 CODATA recommended values
-// https://physics.nist.gov/cuu/Constants/index.html
-//
-// New additions here should also be considered for addition to
-// `warpx_constants` in WarpXUtil.cpp's `makeParser`, so that they're
-// available in parsing and evaluation of PICMI expressions, as well
-// as the corresponding Python definitions
 namespace PhysConst
 {
+
     static constexpr auto c     = static_cast<amrex::Real>( 299'792'458. );
     static constexpr auto ep0   = static_cast<amrex::Real>( 8.8541878128e-12 );
     static constexpr auto mu0   = static_cast<amrex::Real>( 1.25663706212e-06 );

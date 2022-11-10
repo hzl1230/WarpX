@@ -105,6 +105,8 @@ public:
     void Evolve (int lev,
                  const amrex::MultiFab& Ex, const amrex::MultiFab& Ey, const amrex::MultiFab& Ez,
                  const amrex::MultiFab& Bx, const amrex::MultiFab& By, const amrex::MultiFab& Bz,
+                 const amrex::MultiFab& Ex_ext, const amrex::MultiFab& Ey_ext, const amrex::MultiFab& Ez_ext,
+                 const amrex::MultiFab& Bx_ext, const amrex::MultiFab& By_ext, const amrex::MultiFab& Bz_ext,
                  amrex::MultiFab& jx,  amrex::MultiFab& jy, amrex::MultiFab& jz,
                  amrex::MultiFab* cjx,  amrex::MultiFab* cjy, amrex::MultiFab* cjz,
                  amrex::MultiFab* rho, amrex::MultiFab* crho,
@@ -127,7 +129,9 @@ public:
     ///
     void PushP (int lev, amrex::Real dt,
                 const amrex::MultiFab& Ex, const amrex::MultiFab& Ey, const amrex::MultiFab& Ez,
-                const amrex::MultiFab& Bx, const amrex::MultiFab& By, const amrex::MultiFab& Bz);
+                const amrex::MultiFab& Bx, const amrex::MultiFab& By, const amrex::MultiFab& Bz,
+                const amrex::MultiFab& Ex_ext, const amrex::MultiFab& Ey_ext, const amrex::MultiFab& Ez_ext,
+                const amrex::MultiFab& Bx_ext, const amrex::MultiFab& By_ext, const amrex::MultiFab& Bz_ext);
 
     /**
     * \brief This returns a MultiFAB filled with zeros. It is used to return the charge density
@@ -379,6 +383,7 @@ protected:
 
     //! instead of depositing (current, charge) on the finest patch level, deposit to the coarsest grid
     std::vector<bool> m_deposit_on_main_grid;
+    std::vector<bool> m_laser_deposit_on_main_grid;
 
     //! instead of gathering fields from the finest patch level, gather from the coarsest
     std::vector<bool> m_gather_from_main_grid;

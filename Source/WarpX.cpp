@@ -88,6 +88,7 @@ Vector<Real> WarpX::B_external_grid(3, 0.0);
 std::string WarpX::authors = "";
 std::string WarpX::B_ext_grid_s = "default";
 std::string WarpX::E_ext_grid_s = "default";
+int WarpX::add_external_fields = 0;
 
 // Parser for B_external on the grid
 std::string WarpX::str_Bx_ext_grid_function;
@@ -121,6 +122,8 @@ short WarpX::charge_deposition_algo;
 short WarpX::field_gathering_algo;
 short WarpX::particle_pusher_algo;
 short WarpX::maxwell_solver_id;
+short WarpX::J_in_time;
+short WarpX::rho_in_time;
 short WarpX::load_balance_costs_update_algo;
 bool WarpX::do_dive_cleaning = false;
 bool WarpX::do_divb_cleaning = false;
@@ -296,6 +299,10 @@ WarpX::WarpX ()
         Efield_avg_fp.resize(nlevs_max);
         Bfield_avg_fp.resize(nlevs_max);
     }
+
+    // Same as Bfield_fp/Efield_fp for reading external field data
+    Bfield_fp_external.resize(1);
+    Efield_fp_external.resize(1);
 
     m_edge_lengths.resize(nlevs_max);
     m_face_areas.resize(nlevs_max);
@@ -1158,6 +1165,11 @@ WarpX::ReadParameters ()
             WARPX_ALWAYS_ASSERT_WITH_MESSAGE(noz_fft > 0, "PSATD order must be finite unless psatd.periodic_single_box_fft is used");
         }
 
+        // Integers that correspond to the time dependency of J (constant, linear)
+        // and rho (linear, quadratic) for the PSATD algorithm
+        J_in_time = GetAlgorithmInteger(pp_psatd, "J_in_time");
+        rho_in_time = GetAlgorithmInteger(pp_psatd, "rho_in_time");
+
         // Current correction activated by default, unless a charge-conserving
         // current deposition (Esirkepov, Vay) or the div(E) cleaning scheme
         // are used
@@ -1312,10 +1324,28 @@ WarpX::ReadParameters ()
                 v_galilean_is_zero,
                 "Multi-J algorithm not implemented with Galilean PSATD"
             );
+        }
 
-            WARPX_ALWAYS_ASSERT_WITH_MESSAGE(update_with_rho,
-                "psatd.update_with_rho must be set to 1 when warpx.do_multi_J = 1"
-            );
+        if (J_in_time == JInTime::Constant)
+        {
+            WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
+                rho_in_time == RhoInTime::Linear,
+                "psatd.J_in_time=constant supports only psatd.rho_in_time=linear");
+        }
+
+        if (J_in_time == JInTime::Linear)
+        {
+            WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
+                update_with_rho,
+                "psatd.update_with_rho must be set to 1 when psatd.J_in_time=linear");
+
+            WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
+                v_galilean_is_zero,
+                "psatd.J_in_time=linear not implemented with Galilean PSATD");
+
+            WARPX_ALWAYS_ASSERT_WITH_MESSAGE(
+                v_comoving_is_zero,
+                "psatd.J_in_time=linear not implemented with comoving PSATD");
         }
 
         for (int dir = 0; dir < AMREX_SPACEDIM; dir++)
@@ -1630,6 +1660,13 @@ WarpX::AllocLevelData (int lev, const BoxArray& ba, const DistributionMapping& d
     amrex::RealVect dx = {WarpX::CellSize(lev)[0], WarpX::CellSize(lev)[1], WarpX::CellSize(lev)[2]};
 #endif
 
+    // Initialize filter before guard cells manager
+    // (needs info on length of filter's stencil)
+    if (use_filter)
+    {
+        InitFilter();
+    }
+
     guard_cells.Init(
         dt[lev],
         dx,
@@ -1652,7 +1689,9 @@ WarpX::AllocLevelData (int lev, const BoxArray& ba, const DistributionMapping& d
         WarpX::isAnyBoundaryPML(),
         WarpX::do_pml_in_domain,
         WarpX::pml_ncell,
-        this->refRatio());
+        this->refRatio(),
+        use_filter,
+        bilinear_filter.stencil_length_each_dir);
 
 
 #ifdef AMREX_USE_EB
@@ -1687,7 +1726,7 @@ WarpX::AllocLevelData (int lev, const BoxArray& ba, const DistributionMapping& d
 
 void
 WarpX::AllocLevelMFs (int lev, const BoxArray& ba, const DistributionMapping& dm,
-                      const IntVect& ngEB, const IntVect& ngJ, const IntVect& ngRho,
+                      const IntVect& ngEB, IntVect& ngJ, const IntVect& ngRho,
                       const IntVect& ngF, const IntVect& ngG, const bool aux_is_nodal)
 {
     // Declare nodal flags
@@ -1801,6 +1840,20 @@ WarpX::AllocLevelMFs (int lev, const BoxArray& ba, const DistributionMapping& dm
     current_fp[lev][0] = std::make_unique<MultiFab>(amrex::convert(ba,jx_nodal_flag),dm,ncomps,ngJ,tag("current_fp[x]"));
     current_fp[lev][1] = std::make_unique<MultiFab>(amrex::convert(ba,jy_nodal_flag),dm,ncomps,ngJ,tag("current_fp[y]"));
     current_fp[lev][2] = std::make_unique<MultiFab>(amrex::convert(ba,jz_nodal_flag),dm,ncomps,ngJ,tag("current_fp[z]"));
+
+    // Same as Bfield_fp/Efield_fp for reading external field data
+    ParmParse pp_warpx("warpx");
+    pp_warpx.query("B_ext_grid_init_style", WarpX::B_ext_grid_s);
+    pp_warpx.query("E_ext_grid_init_style", WarpX::E_ext_grid_s);
+    if ((WarpX::B_ext_grid_s=="read_from_file" || WarpX::E_ext_grid_s=="read_from_file") && lev==0)
+    {
+        Bfield_fp_external[lev][0] = std::make_unique<MultiFab>(amrex::convert(ba,Bx_nodal_flag),dm,ncomps,ngEB,tag("Bfield_fp_external[0]"));
+        Bfield_fp_external[lev][1] = std::make_unique<MultiFab>(amrex::convert(ba,By_nodal_flag),dm,ncomps,ngEB,tag("Bfield_fp_external[1]"));
+        Bfield_fp_external[lev][2] = std::make_unique<MultiFab>(amrex::convert(ba,Bz_nodal_flag),dm,ncomps,ngEB,tag("Bfield_fp_external[2]"));
+        Efield_fp_external[lev][0] = std::make_unique<MultiFab>(amrex::convert(ba,Ex_nodal_flag),dm,ncomps,ngEB,tag("Efield_fp_external[0]"));
+        Efield_fp_external[lev][1] = std::make_unique<MultiFab>(amrex::convert(ba,Ey_nodal_flag),dm,ncomps,ngEB,tag("Efield_fp_external[1]"));
+        Efield_fp_external[lev][2] = std::make_unique<MultiFab>(amrex::convert(ba,Ez_nodal_flag),dm,ncomps,ngEB,tag("Efield_fp_external[2]"));
+    }
 
     if (do_current_centering)
     {
@@ -2211,7 +2264,8 @@ void WarpX::AllocLevelSpectralSolverRZ (amrex::Vector<std::unique_ptr<SpectralSo
                                                   isAnyBoundaryPML(),
                                                   update_with_rho,
                                                   fft_do_time_averaging,
-                                                  do_multi_J,
+                                                  J_in_time,
+                                                  rho_in_time,
                                                   do_dive_cleaning,
                                                   do_divb_cleaning);
     spectral_solver[lev] = std::move(pss);
@@ -2266,7 +2320,8 @@ void WarpX::AllocLevelSpectralSolver (amrex::Vector<std::unique_ptr<SpectralSolv
                                                 fft_periodic_single_box,
                                                 update_with_rho,
                                                 fft_do_time_averaging,
-                                                do_multi_J,
+                                                J_in_time,
+                                                rho_in_time,
                                                 do_dive_cleaning,
                                                 do_divb_cleaning);
     spectral_solver[lev] = std::move(pss);

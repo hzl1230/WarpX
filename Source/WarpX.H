@@ -66,6 +66,8 @@
 #include <string>
 #include <vector>
 
+#include <openPMD/openPMD.hpp>
+
 enum struct PatchType : int
 {
     fine,
@@ -117,6 +119,9 @@ public:
     static std::string B_ext_grid_s;
     //! Initialization type for external electric field on the grid
     static std::string E_ext_grid_s;
+
+    //! 0 for no exteranl field loading; 1/2/3 for E/B/both.
+    static int add_external_fields;
 
     //! String storing parser function to initialize x-component of the magnetic field on the grid
     static std::string str_Bx_ext_grid_function;
@@ -186,6 +191,10 @@ public:
      */
     static amrex::Vector<ParticleBoundaryType> particle_boundary_hi;
 
+    //! Integers that correspond to the time dependency of J (constant, linear)
+    //! and rho (linear, quadratic) for the PSATD algorithm
+    static short J_in_time;
+    static short rho_in_time;
 
     //! If true, the current is deposited on a nodal grid and then centered onto a staggered grid
     //! using finite centering of order given by #current_centering_nox, #current_centering_noy,
@@ -349,6 +358,7 @@ public:
 
     amrex::MultiFab * get_pointer_Efield_fp  (int lev, int direction) const { return Efield_fp[lev][direction].get(); }
     amrex::MultiFab * get_pointer_Bfield_fp  (int lev, int direction) const { return Bfield_fp[lev][direction].get(); }
+
     amrex::MultiFab * get_pointer_current_fp  (int lev, int direction) const { return current_fp[lev][direction].get(); }
     amrex::MultiFab * get_pointer_rho_fp  (int lev) const { return rho_fp[lev].get(); }
     amrex::MultiFab * get_pointer_F_fp  (int lev) const { return F_fp[lev].get(); }
@@ -836,6 +846,9 @@ public:
          const char field,
          const int lev);
 
+    void ReadExternalFieldsFromFile (std::string read_fields_from_path, amrex::MultiFab* mf,
+        std::string F_name, std::string F_component);
+
     /**
      * \brief
      * This function initializes and calculates grid quantities used along with
@@ -975,11 +988,22 @@ private:
         const int lev);
     void StoreCurrent (const int lev);
     void RestoreCurrent (const int lev);
-    void ApplyFilterandSumBoundaryJ (
-        const amrex::Vector<std::array<std::unique_ptr<amrex::MultiFab>,3>>& J_fp,
-        const amrex::Vector<std::array<std::unique_ptr<amrex::MultiFab>,3>>& J_cp,
+    void ApplyFilterJ (
+        const amrex::Vector<std::array<std::unique_ptr<amrex::MultiFab>,3>>& current,
         const int lev,
-        PatchType patch_type);
+        const int idim);
+    void ApplyFilterJ (
+        const amrex::Vector<std::array<std::unique_ptr<amrex::MultiFab>,3>>& current,
+        const int lev);
+    void SumBoundaryJ (
+        const amrex::Vector<std::array<std::unique_ptr<amrex::MultiFab>,3>>& current,
+        const int lev,
+        const int idim,
+        const amrex::Periodicity& period);
+    void SumBoundaryJ (
+        const amrex::Vector<std::array<std::unique_ptr<amrex::MultiFab>,3>>& current,
+        const int lev,
+        const amrex::Periodicity& period);
     void NodalSyncJ (
         const amrex::Vector<std::array<std::unique_ptr<amrex::MultiFab>,3>>& J_fp,
         const amrex::Vector<std::array<std::unique_ptr<amrex::MultiFab>,3>>& J_cp,
@@ -1095,7 +1119,7 @@ private:
                                         const int centering_noz);
 
     void AllocLevelMFs (int lev, const amrex::BoxArray& ba, const amrex::DistributionMapping& dm,
-                        const amrex::IntVect& ngEB, const amrex::IntVect& ngJ,
+                        const amrex::IntVect& ngEB, amrex::IntVect& ngJ,
                         const amrex::IntVect& ngRho, const amrex::IntVect& ngF,
                         const amrex::IntVect& ngG, const bool aux_is_nodal);
 #ifdef WARPX_USE_PSATD
@@ -1148,6 +1172,10 @@ private:
     amrex::Vector<std::array< std::unique_ptr<amrex::MultiFab>, 3 > > Bfield_fp;
     amrex::Vector<std::array< std::unique_ptr<amrex::MultiFab>, 3 > > Efield_avg_fp;
     amrex::Vector<std::array< std::unique_ptr<amrex::MultiFab>, 3 > > Bfield_avg_fp;
+
+    // Same as Bfield_fp/Efield_fp for reading external field data
+    amrex::Vector<std::array< std::unique_ptr<amrex::MultiFab>, 3 > > Efield_fp_external;
+    amrex::Vector<std::array< std::unique_ptr<amrex::MultiFab>, 3 > > Bfield_fp_external;
 
     //! EB: Lengths of the mesh edges
     amrex::Vector<std::array< std::unique_ptr<amrex::MultiFab>, 3 > > m_edge_lengths;
